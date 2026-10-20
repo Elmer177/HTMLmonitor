@@ -2,7 +2,7 @@ name: HTML Monitor
 
 on:
   schedule:
-    - cron: "*/30 * * * *"   # 30分ごと(UTC基準。GitHub側の混雑で数分〜十数分遅れることがあります)
+    - cron: "*/10 * * * *"   # 10分ごと(UTC基準。GitHub側の混雑で数分〜十数分遅れることがあります)
   workflow_dispatch:          # Actions画面から手動実行も可能
 
 permissions:
