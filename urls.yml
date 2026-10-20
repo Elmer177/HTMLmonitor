@@ -1,0 +1,10 @@
+# 監視対象の一覧。複数書けます。
+targets:
+  - name: サンプルページ          # 通知に表示される名前
+    url: https://members.elsi.jp/~genda/2026_NUM/
+    # 毎回変わる部分(日時・アクセス数など)を正規表現で除外すると誤検知を防げます
+    ignore_patterns:
+      - '\d{4}[/-]\d{1,2}[/-]\d{1,2} \d{1,2}:\d{2}(:\d{2})?'
+
+  # - name: お知らせページ
+  #   url: https://example.org/news
