@@ -93,7 +93,7 @@ def make_diff(old: str, new: str) -> tuple[str, int, int]:
 
 
 def build_message(name: str, url: str, diff: str, added: int, removed: int) -> str:
-    header = f"🔔 **変更を検知: {name}**\n<{url}>\n追加 {added} 行 / 削除 {removed} 行\n"
+    header = f" **変更を検知: {name}**\n<{url}>\n追加 {added} 行 / 削除 {removed} 行\n"
     fence_open, fence_close = "```diff\n", "\n```"
     room = DISCORD_LIMIT - len(header) - len(fence_open) - len(fence_close) - 30
     body = diff.replace("```", "ˋˋˋ")
