@@ -38,6 +38,11 @@ score100.txt
 company10.txt
 １０月２０日（火） 第５回
 書式・ファイル入出力
+今日の課題
+と 、
+以下、課題で用いる入力データ。
+matrix_a.dat
+matrix_b.dat
 １０月２３日（金） 第６回
 担当TA
 グラフをgnuplotで書いてみる
