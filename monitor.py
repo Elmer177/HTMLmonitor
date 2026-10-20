@@ -5,11 +5,18 @@
 - urls.yml に監視対象を列挙
 - 前回のテキストを snapshots/ に保存し、今回取得分と比較
 - 変化があれば Discord Webhook (環境変数 DISCORD_WEBHOOK_URL) に差分を投稿
+
+使い方:
+  python monitor.py          1回だけチェックして終了
+  python monitor.py --loop   INTERVAL_MINUTES(既定10)分ごとにチェックし続ける(常駐用)
 """
 from __future__ import annotations
 
+import argparse
 import difflib
 import hashlib
+import logging
+import logging.handlers
 import os
 import re
 import sys
@@ -23,12 +30,45 @@ from bs4 import BeautifulSoup
 ROOT = Path(__file__).resolve().parent
 CONFIG_PATH = ROOT / "urls.yml"
 SNAPSHOT_DIR = ROOT / "snapshots"
+LOG_DIR = ROOT / "logs"
+ENV_PATH = ROOT / ".env"
 
 DISCORD_LIMIT = 2000  # Discordメッセージの最大文字数
 USER_AGENT = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0 Safari/537.36 html-monitor"
 )
+
+log = logging.getLogger("html-monitor")
+
+
+def setup_logging() -> None:
+    """logs/monitor.log(5MB×3世代でローテーション)と、あればコンソールに出力する。"""
+    LOG_DIR.mkdir(exist_ok=True)
+    fmt = logging.Formatter("%(asctime)s %(message)s", "%Y-%m-%d %H:%M:%S")
+    handlers: list[logging.Handler] = [
+        logging.handlers.RotatingFileHandler(
+            LOG_DIR / "monitor.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8"
+        )
+    ]
+    if sys.stdout is not None:  # pythonw.exe で起動した場合はコンソールがない
+        handlers.append(logging.StreamHandler(sys.stdout))
+    for h in handlers:
+        h.setFormatter(fmt)
+        log.addHandler(h)
+    log.setLevel(logging.INFO)
+
+
+def load_env() -> None:
+    """.env の KEY=VALUE を環境変数に読み込む(既に設定済みの変数は上書きしない)。"""
+    if not ENV_PATH.exists():
+        return
+    for line in ENV_PATH.read_text(encoding="utf-8-sig").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def load_config() -> list[dict]:
@@ -105,7 +145,7 @@ def build_message(name: str, url: str, diff: str, added: int, removed: int) -> s
 def notify_discord(content: str) -> None:
     webhook = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook:
-        print("[warn] DISCORD_WEBHOOK_URL 未設定のため通知をスキップ\n" + content)
+        log.warning("[warn] DISCORD_WEBHOOK_URL 未設定のため通知をスキップ\n" + content)
         return
     r = requests.post(webhook, json={"content": content}, timeout=30)
     if r.status_code == 429:  # レート制限
@@ -119,37 +159,58 @@ def check_target(t: dict) -> bool:
     url, name = t["url"], t["name"]
     text = html_to_text(fetch_html(url), t["ignore_patterns"])
     path = snapshot_path(url)
-
     if not path.exists():
         path.write_text(text, encoding="utf-8")
-        print(f"[init] {name}: 初回スナップショットを保存")
+        log.info(f"[init] {name}: 初回スナップショットを保存")
         return False
 
     old = path.read_text(encoding="utf-8")
     if old == text:
-        print(f"[same] {name}")
+        log.info(f"[same] {name}")
         return False
 
     diff, added, removed = make_diff(old, text)
     notify_discord(build_message(name, url, diff, added, removed))
     path.write_text(text, encoding="utf-8")
-    print(f"[diff] {name}: +{added} -{removed}")
+    log.info(f"[diff] {name}: +{added} -{removed}")
     return True
 
 
-def main() -> int:
+def run_once() -> None:
     SNAPSHOT_DIR.mkdir(exist_ok=True)
     errors = []
-    for t in load_config():
+    for t in load_config():  # 毎回読み直すので urls.yml の変更は再起動なしで反映される
         try:
             check_target(t)
         except Exception as e:  # 1件の失敗で全体を止めない
-            print(f"[error] {t['name']}: {e}", file=sys.stderr)
+            log.error(f"[error] {t['name']}: {e}")
             errors.append(f"{t['name']}: {e}")
 
     if errors and os.environ.get("NOTIFY_ERRORS", "false").lower() == "true":
         notify_discord("⚠️ **監視エラー**\n" + "\n".join(errors)[:1900])
-    return 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--loop", action="store_true", help="一定間隔でチェックし続ける")
+    args = parser.parse_args()
+
+    load_env()
+    setup_logging()
+
+    if not args.loop:
+        run_once()
+        return 0
+
+    interval = float(os.environ.get("INTERVAL_MINUTES", "10")) * 60
+    log.info(f"[start] {interval / 60:g}分間隔で監視を開始")
+    while True:
+        started = time.monotonic()
+        try:
+            run_once()
+        except Exception:  # urls.yml の書き間違いなどでも常駐プロセスは止めない
+            log.exception("[error] チェック中に予期しないエラー")
+        time.sleep(max(0.0, interval - (time.monotonic() - started)))
 
 
 if __name__ == "__main__":

@@ -1,46 +1,58 @@
 # HTML Monitor
 
-指定したURLのページ本文テキストを定期的に取得し、前回から変化があれば Discord に差分を通知します。GitHub Actions で動くのでサーバーは不要です。
+指定したURLのページ本文テキストを定期的に取得し、前回から変化があれば Discord に差分を通知します。常時起動している Windows PC で常駐させて動かします。
 
 ## 構成
 
 ```
-.github/workflows/monitor.yml  定期実行(30分ごと)
-monitor.py                     取得・比較・通知の本体
-urls.yml                       監視対象の一覧
+monitor.py         取得・比較・通知の本体(--loop で常駐)
+install-task.ps1   Windows の起動時に自動で常駐させるタスクを登録
+urls.yml           監視対象の一覧
+.env.example       設定ファイルのひな形(.env にコピーして使う)
 requirements.txt
-snapshots/                     前回のテキスト(自動生成・自動コミット)
+snapshots/         前回のテキスト(自動生成・git管理外)
+logs/              実行ログ(自動生成・git管理外)
 ```
 
-## セットアップ
+## セットアップ(Windows)
 
-0. **ワークフローファイルを所定の場所へ移動**(初回のみ)
-   ```bash
-   cd ~/html-monitor
-   mkdir -p .github/workflows && mv workflow-monitor.yml .github/workflows/monitor.yml
-   ```
+事前に [Python](https://www.python.org/downloads/windows/) と [Git](https://git-scm.com/download/win) をインストールしておきます(Python のインストーラでは「Add python.exe to PATH」にチェック)。
 
 1. **Discord Webhook を作る**
    通知したいチャンネルの「チャンネルの編集 → 連携サービス → ウェブフック → 新しいウェブフック」で作成し、URLをコピー。
 
-2. **GitHub にリポジトリを作り、このフォルダの中身を push**
-   監視対象のURLを公開したくない場合はプライベートリポジトリにしてください(プライベートでも無料枠内で十分動きます)。
+2. **リポジトリを取得して環境を作る**(PowerShell)
+   ```powershell
+   git clone https://github.com/isct-meken-dev/HTMLmonitor.git C:\HTMLmonitor
+   cd C:\HTMLmonitor
+   python -m venv .venv
+   .venv\Scripts\pip install -r requirements.txt
+   ```
 
-3. **Webhook URL を Secret に登録**
-   リポジトリの Settings → Secrets and variables → Actions → New repository secret
-   - Name: `DISCORD_WEBHOOK_URL`
-   - Secret: コピーしたWebhook URL
+3. **Webhook URL を設定**
+   ```powershell
+   copy .env.example .env
+   notepad .env    # DISCORD_WEBHOOK_URL を書き換えて保存
+   ```
 
-4. **監視対象を設定**
-   `urls.yml` の `url` を監視したいページに書き換えて push。
+4. **手動で1回実行して動作確認**
+   ```powershell
+   .venv\Scripts\python monitor.py
+   ```
+   初回は `[init]` と出てスナップショットを保存するだけで、通知は来ません。
 
-5. **初回実行**
-   Actions タブ → HTML Monitor → Run workflow。初回はスナップショットを保存するだけで通知は来ません。次回以降、変化があると Discord に届きます。
+5. **常駐タスクを登録**
+   PowerShell を「管理者として実行」で開き:
+   ```powershell
+   cd C:\HTMLmonitor
+   powershell -ExecutionPolicy Bypass -File .\install-task.ps1
+   ```
+   以後、PC起動時に自動で `monitor.py --loop` が立ち上がり、10分ごとにチェックします。ログオンしていなくても動き、異常終了しても1分後に自動で再起動します。
 
 ## 通知の例
 
 ```
-🔔 変更を検知: お知らせページ
+変更を検知: お知らせページ
 https://example.org/news
 追加 2 行 / 削除 1 行
 @@ -3,3 +3,4 @@
@@ -50,20 +62,23 @@ https://example.org/news
 +年末年始休業のご案内
 ```
 
-## 調整ポイント
+## 運用
 
-- **チェック間隔**: `monitor.yml` の `cron`。`*/15 * * * *` で15分ごと、`0 * * * *` で1時間ごと。GitHub Actions の最短は5分ですが、相手サイトへの負荷を考えて15分以上がおすすめです。
-- **誤検知が多いとき**: 毎回変わる日時・アクセス数・ランダムなおすすめ記事などが原因です。`urls.yml` の `ignore_patterns` に正規表現を足すと、その部分を無視できます。
-- **取得エラーも知りたいとき**: `monitor.yml` の `NOTIFY_ERRORS` を `"true"` に。
-- **ローカルで試す**:
-  ```bash
-  pip install -r requirements.txt
-  DISCORD_WEBHOOK_URL="https://discord.com/api/webhooks/..." python monitor.py
+- **動作確認**: `Get-ScheduledTask HTMLMonitor`(State が Running なら稼働中)、ログは `Get-Content logs\monitor.log -Tail 20 -Wait`。
+- **監視対象の変更**: `urls.yml` を書き換えるだけで、次回のチェックから反映されます(再起動不要)。
+- **コード・`.env` の変更**: 反映には再起動が必要です。
+  ```powershell
+  git pull
+  Stop-ScheduledTask HTMLMonitor; Start-ScheduledTask HTMLMonitor
   ```
-  Webhook未設定なら通知内容をコンソールに出すだけになります。
+- **チェック間隔**: `.env` の `INTERVAL_MINUTES`(分)。相手サイトへの負荷を考えて10分以上を推奨。
+- **誤検知が多いとき**: 毎回変わる日時・アクセス数などが原因です。`urls.yml` の `ignore_patterns` に正規表現を足すと、その部分を無視できます。
+- **取得エラーも知りたいとき**: `.env` の `NOTIFY_ERRORS` を `true` に。
+- **ログ**: `logs\monitor.log` は 5MB を超えると自動でローテーションされます(最大3世代)。
+- **止める / 削除する**: `Stop-ScheduledTask HTMLMonitor` / `Unregister-ScheduledTask HTMLMonitor`。
 
 ## 注意
 
+- PCが停止・スリープしている間はチェックされません。電源設定でスリープを「なし」にしてください。
 - JavaScript で後から描画されるページ(SPA など)は、取得したHTMLに本文が含まれないため検知できません。その場合は Playwright を使う版に差し替えが必要です。
-- 60日間リポジトリに動きがないと GitHub がスケジュール実行を自動停止します。本システムはスナップショットをコミットするので、ページに変化がある限り止まりませんが、変化が全くないページだけを監視していると止まることがあります(停止前にメールで通知が来ます)。
 - 監視先サイトの利用規約やrobots.txtを確認し、過度な頻度でアクセスしないでください。
